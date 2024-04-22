@@ -1,4 +1,3 @@
-local install = require('nvim-treesitter.install')
 local parsers = require('nvim-treesitter.parsers')
 local config = require('nvim-treesitter.config')
 local util = require('nvim-treesitter.util')
@@ -25,16 +24,9 @@ local function install_health()
   end
 
   if vim.fn.executable('tree-sitter') == 0 then
-    health.warn(
-      '`tree-sitter` executable not found (parser generator, only needed for :TSInstallFromGrammar,'
-        .. ' not required for :TSInstall)'
-    )
+    health.warn('`tree-sitter` executable not found')
   else
-    health.ok(
-      '`tree-sitter` found '
-        .. (ts_cli_version() or '(unknown version)')
-        .. ' (only needed for `:TSInstallFromGrammar`)'
-    )
+    health.ok('`tree-sitter` found ' .. (ts_cli_version() or '(unknown version)'))
   end
 
   if vim.fn.executable('git') == 0 then
@@ -46,24 +38,6 @@ local function install_health()
     health.ok('`git` executable found.')
   end
 
-  local cc = install.select_executable(install.compilers)
-  if not cc then
-    health.error('`cc` executable not found.', {
-      'Check that any of '
-        .. table.concat(install.compilers, ', ')
-        .. ' is in your $PATH'
-        .. ' or set `$CC` or `require"nvim-treesitter.install".compilers` explicitly.',
-    })
-  else
-    local version = assert(vim.system({ cc, cc == 'cl' and '' or '--version' }):wait().stdout)
-    health.ok(
-      '`'
-        .. cc
-        .. '` executable found, selected from:  '
-        .. table.concat(install.compilers, ', ')
-        .. (version and ('\nVersion: ' .. version) or '')
-    )
-  end
   if vim.treesitter.language_version then
     if vim.treesitter.language_version >= NVIM_TREESITTER_MINIMUM_ABI then
       health.ok(

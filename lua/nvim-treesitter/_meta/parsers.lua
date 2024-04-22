@@ -6,7 +6,6 @@ error('Cannot require a meta file')
 ---@field url string
 ---@field branch? string
 ---@field revision? string
----@field files string[]
 ---@field generate_from_json? boolean
 ---@field generate? boolean
 ---@field location? string

@@ -23,18 +23,7 @@ local uv_symlink = a.wrap(uv.fs_symlink, 4)
 --- @type fun(path: string): string?
 local uv_unlink = a.wrap(uv.fs_unlink, 2)
 
-local M = {}
-
 local max_jobs = 10
-
-local iswin = uv.os_uname().sysname == 'Windows_NT'
-local ismac = uv.os_uname().sysname == 'Darwin'
-
---- @diagnostic disable-next-line:missing-parameter
-M.compilers = { 'cc', 'gcc', 'clang', 'cl', 'zig' }
-if uv.os_getenv('CC') then
-  table.insert(M.compilers, 1, uv.os_getenv('CC'))
-end
 
 local function system(cmd, opts)
   log.trace('running job: (cwd=%s) %s', opts.cwd, table.concat(cmd, ' '))
@@ -49,6 +38,8 @@ local function system(cmd, opts)
 
   return r
 end
+
+local M = {}
 
 ---
 --- PARSER INFO
@@ -99,18 +90,6 @@ end
 --- PARSER MANAGEMENT FUNCTIONS
 ---
 
-local function istring(c)
-  return type(c) == 'string'
-end
-
-local function cc_err()
-  log.error(
-    'No C compiler found! "'
-      .. table.concat(vim.tbl_filter(istring, M.compilers), '", "')
-      .. '" are not executable.'
-  )
-end
-
 --- @param x string
 --- @return boolean
 local function executable(x)
@@ -122,10 +101,6 @@ end
 --- @param compile_location string
 --- @return string? err
 local function do_generate(logger, repo, compile_location)
-  if not executable('tree-sitter') then
-    return logger:error('tree-sitter CLI not found: `tree-sitter` is not executable')
-  end
-
   logger:info(
     string.format(
       'Generating parser.c from %s...',
@@ -134,7 +109,7 @@ local function do_generate(logger, repo, compile_location)
   )
 
   local r = system({
-    fn.exepath('tree-sitter'),
+    'tree-sitter',
     'generate',
     '--no-bindings',
     '--abi',
@@ -234,10 +209,6 @@ end
 ---@param project_dir string
 ---@return string? err
 local function do_download_git(logger, repo, project_name, cache_dir, revision, project_dir)
-  if not executable('git') then
-    return logger:error('git not found!')
-  end
-
   logger:info('Downloading ' .. project_name .. '...')
 
   local r = system({
@@ -268,110 +239,30 @@ local function do_download_git(logger, repo, project_name, cache_dir, revision, 
   end
 end
 
---- @type table<string,table<string,boolean>>
-local cc_args_cache = vim.defaulttable()
-
---- @param cc string
---- @param arg string
---- @return boolean
-local function test_cc_arg(cc, arg)
-  if cc_args_cache[cc][arg] == nil then
-    cc_args_cache[cc][arg] = system({ cc, '-xc', '-', arg }, {
-      stdin = 'int main(void) { return 0; }',
-    }).code == 0
-  end
-  return cc_args_cache[cc][arg]
-end
-
----@param executables string[]
----@return string?
-function M.select_executable(executables)
-  return vim.tbl_filter(executable, executables)[1]
-end
-
--- Returns the compiler arguments based on the compiler and OS
----@param repo InstallInfo
----@param compiler string
----@return string[]
-local function select_compiler_args(repo, compiler)
-  if compiler:find('cl$') or compiler:find('cl.exe$') then
-    return {
-      '/Fe:',
-      'parser.so',
-      '/Isrc',
-      repo.files,
-      '-Os',
-      '/utf-8',
-      '/LD',
-    }
-  end
-
-  if compiler:find('zig$') or compiler:find('zig.exe$') then
-    return {
-      'cc',
-      '-o',
-      'parser.so',
-      repo.files,
-      '-lc',
-      '-Isrc',
-      '-shared',
-      '-Os',
-    }
-  end
-
-  local args = {
-    '-o',
-    'parser.so',
-    '-I./src',
-    repo.files,
-    '-Os',
-    ismac and '-bundle' or '-shared',
-  }
-
-  --- @param arg string
-  local function add_cc_arg(arg)
-    if test_cc_arg(compiler, arg) then
-      args[#args + 1] = arg
-    end
-  end
-
-  if not iswin then
-    add_cc_arg('-Wall')
-    add_cc_arg('-Wextra')
-    add_cc_arg('-fPIC')
-
-    -- Make sure we don't compile in any unresolved symbols, otherwise nvim will
-    -- just exit (not even crash)
-    add_cc_arg('-Werror=implicit-function-declaration')
-  end
-
-  return args
-end
-
 ---@param repo InstallInfo
 ---@return boolean
 local function can_download_tar(repo)
   local can_use_tar = executable('tar') and executable('curl')
   local is_github = repo.url:find('github.com', 1, true) ~= nil
   local is_gitlab = repo.url:find('gitlab.com', 1, true) ~= nil
-  return can_use_tar and (is_github or is_gitlab) and not iswin
+  return can_use_tar and (is_github or is_gitlab) and uv.os_uname().sysname ~= 'Windows_NT'
 end
 
 -- Returns the compile command based on the OS and user options
 ---@param logger Logger
----@param repo InstallInfo
----@param cc string
 ---@param compile_location string
 ---@return string? err
-local function do_compile(logger, repo, cc, compile_location)
-  local args = vim.iter(select_compiler_args(repo, cc)):flatten():totable()
-  local cmd = vim.list_extend({ cc }, args)
+local function do_compile(logger, compile_location)
+  logger:info(string.format('Compiling parser'))
 
-  logger:info('Compiling parser')
-
-  local r = system(cmd, { cwd = compile_location })
+  local r = system({
+    'tree-sitter',
+    'build',
+    '-o',
+    'parser.so',
+  }, { cwd = compile_location })
   if r.code > 0 then
-    return logger:error('Error during compilation: %s', r.stderr)
+    return logger:error('Error during "tree-sitter build": %s', r.stderr)
   end
 end
 
@@ -385,12 +276,6 @@ local function install_lang0(lang, cache_dir, install_dir, generate)
 
   local repo = get_parser_install_info(lang)
   if repo then
-    local cc = M.select_executable(M.compilers)
-    if not cc then
-      cc_err()
-      return
-    end
-
     local project_name = 'tree-sitter-' .. lang
 
     local revision = repo.revision
@@ -426,7 +311,7 @@ local function install_lang0(lang, cache_dir, install_dir, generate)
     end
 
     do
-      local err = do_compile(logger, repo, cc, compile_location)
+      local err = do_compile(logger, compile_location)
       if err then
         return err
       end
